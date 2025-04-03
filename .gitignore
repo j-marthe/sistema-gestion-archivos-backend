@@ -1,0 +1,9 @@
+# Ignorar archivos de compilación
+/bin/
+/obj/
+.vs/
+.vscode/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates

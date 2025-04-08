@@ -8,17 +8,17 @@ using Microsoft.IdentityModel.Tokens;
 
 public static class TokenUtils
 {
-    public static string GenerarTokenJWT(Usuario usuario, IConfiguration config)
+    public static string GenerarTokenJWT(Usuario usuario, string rolNombre, IConfiguration config)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"]));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
         var claims = new[]
         {
-            new Claim(ClaimTypes.NameIdentifier, usuario.Id.ToString()),
-            new Claim(ClaimTypes.Email, usuario.Email),
-            new Claim(ClaimTypes.Role, usuario.RolId.ToString())
-        };
+        new Claim(ClaimTypes.NameIdentifier, usuario.Id.ToString()),
+        new Claim(ClaimTypes.Email, usuario.Email),
+        new Claim(ClaimTypes.Role, rolNombre)
+    };
 
         var token = new JwtSecurityToken(
             issuer: config["Jwt:Issuer"],
@@ -29,5 +29,5 @@ public static class TokenUtils
         );
 
         return new JwtSecurityTokenHandler().WriteToken(token);
-    } 
+    }
 }

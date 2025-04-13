@@ -95,11 +95,30 @@ public class AuthController : ControllerBase
     }
 
     [Authorize(Roles = "Administrador")]
-    [HttpGet("usuarios/{id}")]
+    [HttpDelete("usuarios/eliminar/{id}")]
     public IActionResult EliminarUsuario(Guid id)
     {
         var eliminado = _authService.EliminarUsuario(id);
         return eliminado ? Ok("Usuario eliminado") : NotFound("Usuario no encontrado");
+    }
+
+    [Authorize(Roles = "Administrador")]
+    [HttpPut("usuarios/editar/{id}")]
+    public IActionResult EditarUsuario(Guid id, [FromBody] EditarUsuarioDTO dto)
+    {
+        var usuario = new Usuario
+        {
+            Id = id,
+            Nombre = dto.Nombre,
+            Email = dto.Email,
+            ContrasenaHash = BCrypt.Net.BCrypt.HashPassword(dto.Contrasena),
+            RolId = dto.RolId
+        };
+
+        bool actualizado = _authService.EditarUsuario(usuario);
+
+        // Responder según el resultado de la actualización
+        return actualizado ? Ok("Usuario actualizado correctamente") : NotFound("Usuario no encontrado");
     }
 }
 

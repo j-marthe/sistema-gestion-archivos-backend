@@ -141,4 +141,22 @@ public class AuthService
         return cmd.ExecuteNonQuery() > 0;
     }
 
+    public bool EditarUsuario(Usuario usuario) 
+    {
+        using var conexion = new SqlConnection(_connectionString);
+        conexion.Open();
+
+        var query = @"UPDATE Usuarios 
+                  SET Nombre = @Nombre, Email = @Email, Rol_Id = @Rol_Id 
+                  WHERE Id = @Id";
+
+        using var cmd = new SqlCommand(query, conexion);
+        cmd.Parameters.AddWithValue("@Id", usuario.Id);
+        cmd.Parameters.AddWithValue("@Nombre", usuario.Nombre);
+        cmd.Parameters.AddWithValue("@Email", usuario.Email);
+        cmd.Parameters.AddWithValue("@Rol_Id", usuario.RolId);
+
+        return cmd.ExecuteNonQuery() > 0;
+    }
+
 }

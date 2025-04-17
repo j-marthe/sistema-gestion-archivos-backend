@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using SistemaGestionArchivosBackend.Services;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,9 @@ builder.Services.AddOpenApi();
 
 // Inyección del AuthService (ADO.NET)
 builder.Services.AddScoped<AuthService>();
+
+// Inyección del BlobStorageService
+builder.Services.AddScoped<IBlobStorageService, BlobStorageService>();
 
 // Configuración de JWT
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

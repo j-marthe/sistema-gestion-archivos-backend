@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using System.Data.SqlClient;
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -277,7 +278,7 @@ public class DocumentosController : ControllerBase
         {
             await conexion.OpenAsync();
 
-            // 1. Datos principales
+            // Obtener los datos principales
             using (var cmd = new SqlCommand(@"
             SELECT Archivos.Id, Archivos.Nombre, Archivos.FechaSubida, 
                    Usuarios.Nombre AS Usuario, 
@@ -306,7 +307,7 @@ public class DocumentosController : ControllerBase
                 reader.Close();
             }
 
-            // 2. Metadatos
+            // Obtener Metadatos
             using (var cmd = new SqlCommand("SELECT Clave, Valor FROM Metadatos WHERE ArchivoId = @Id", conexion))
             {
                 cmd.Parameters.AddWithValue("@Id", id);
@@ -320,7 +321,7 @@ public class DocumentosController : ControllerBase
                 reader.Close();
             }
 
-            // 3. Etiquetas
+            // Obtener Etiquetas
             using (var cmd = new SqlCommand("SELECT E.Nombre FROM ArchivoEtiquetas AE INNER JOIN Etiquetas E ON AE.EtiquetaId = E.Id WHERE AE.ArchivoId = @Id", conexion))
             {
                 cmd.Parameters.AddWithValue("@Id", id);
@@ -334,6 +335,171 @@ public class DocumentosController : ControllerBase
         }
 
         return Ok(archivoDetalles);
+    }
+
+    // Editar los metadatos de un archivo
+    [Authorize]
+    [HttpPut("editar-metadatos/{id}")]
+    public async Task<IActionResult> EditarMetadatos(Guid id, [FromBody] Dictionary<string, string> metadatos)
+    {
+        if (metadatos == null || metadatos.Count == 0)
+        {
+            return BadRequest("Los metadatos no pueden estar vacíos.");
+        }
+
+        using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
+        {
+            await conexion.OpenAsync();
+
+            //Verificar si existe el archivo
+            using var checkCmd = new SqlCommand("SELECT COUNT(1) FROM Archivos WHERE Id = @Id", conexion);
+            checkCmd.Parameters.AddWithValue("@Id", id);
+            var existe = (int)await checkCmd.ExecuteScalarAsync();
+
+            if (existe == 0) return NotFound("Archivo no encontrado");
+
+            //Eliminar los metadatos que hubiese
+            using var deleteCmd = new SqlCommand("DELETE FROM Metadatos WHERE ArchivoId = @Id", conexion);
+            deleteCmd.Parameters.AddWithValue("@Id", id);
+            await deleteCmd.ExecuteNonQueryAsync();
+
+            //Insertar los nuevos metadatos
+            foreach (var metadato in metadatos)
+            {
+                using var insertCmd = new SqlCommand("INSERT INTO Metadatos (Id, ArchivoId, Clave, Valor) VALUES (@Id, @ArchivoId, @Clave, @Valor)", conexion);
+                insertCmd.Parameters.AddWithValue("@Id", Guid.NewGuid());
+                insertCmd.Parameters.AddWithValue("@ArchivoId", id);
+                insertCmd.Parameters.AddWithValue("@Clave", metadato.Key);
+                insertCmd.Parameters.AddWithValue("@Valor", metadato.Value);
+                await insertCmd.ExecuteNonQueryAsync();
+            }
+        }
+
+        return Ok("Metadatos actualizados correctamente.");
+    }
+
+    // Crear Categorias
+
+    // Búsqueda Avanzada
+    [Authorize]
+    [HttpPost("buscar")]
+    public async Task<IActionResult> Buscar([FromBody] FiltrosBusquedaDTO filtros)
+    {
+        var resultados = new List<object>();
+
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        var consulta = new StringBuilder(@"
+        SELECT DISTINCT A.Id, A.Nombre, A.FechaSubida, U.Nombre AS Usuario, C.Nombre AS Categoria
+        FROM Archivos A
+        INNER JOIN Usuarios U ON A.UsuarioId = U.Id
+        INNER JOIN Categorias C ON A.CategoriaId = C.Id
+        LEFT JOIN ArchivoEtiquetas AE ON A.Id = AE.ArchivoId
+        LEFT JOIN Etiquetas E ON AE.EtiquetaId = E.Id
+        LEFT JOIN Metadatos M ON A.Id = M.ArchivoId
+        WHERE 1=1
+    ");
+
+        var cmd = new SqlCommand();
+        cmd.Connection = conexion;
+
+        if (!string.IsNullOrWhiteSpace(filtros.Nombre))
+        {
+            consulta.Append(" AND A.Nombre LIKE @Nombre");
+            cmd.Parameters.AddWithValue("@Nombre", $"%{filtros.Nombre}%");
+        }
+
+        if (!string.IsNullOrWhiteSpace(filtros.Usuario))
+        {
+            consulta.Append(" AND U.Nombre LIKE @Usuario");
+            cmd.Parameters.AddWithValue("@Usuario", $"%{filtros.Usuario}%");
+        }
+
+        if (filtros.CategoriaId.HasValue)
+        {
+            consulta.Append(" AND A.CategoriaId = @CategoriaId");
+            cmd.Parameters.AddWithValue("@CategoriaId", filtros.CategoriaId);
+        }
+
+        if (filtros.FechaDesde.HasValue)
+        {
+            consulta.Append(" AND A.FechaSubida >= @Desde");
+            cmd.Parameters.AddWithValue("@Desde", filtros.FechaDesde.Value);
+        }
+
+        if (filtros.FechaHasta.HasValue)
+        {
+            consulta.Append(" AND A.FechaSubida <= @Hasta");
+            cmd.Parameters.AddWithValue("@Hasta", filtros.FechaHasta.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filtros.ValorMetadato))
+        {
+            consulta.Append(" AND M.Valor LIKE @ValorMeta");
+            cmd.Parameters.AddWithValue("@ValorMeta", $"%{filtros.ValorMetadato}%");
+        }
+
+        if (filtros.Etiquetas != null && filtros.Etiquetas.Any())
+        {
+            var etiquetasParams = filtros.Etiquetas.Select((etq, i) => $"@Etiqueta{i}").ToList();
+            consulta.Append($" AND E.Nombre IN ({string.Join(",", etiquetasParams)})");
+            for (int i = 0; i < filtros.Etiquetas.Count; i++)
+            {
+                cmd.Parameters.AddWithValue($"@Etiqueta{i}", filtros.Etiquetas[i]);
+            }
+        }
+
+        cmd.CommandText = consulta.ToString();
+
+        // Primero se obtiene los datos de los archivos
+        var archivos = new List<(Guid Id, string Nombre, DateTime Fecha, string Usuario, string Categoria)>();
+
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            archivos.Add((
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetDateTime(2),
+                reader.GetString(3),
+                reader.GetString(4)
+            ));
+        }
+        reader.Close();
+
+        // Luego se obtiene las etiquetas y los metadatos
+        foreach (var archivo in archivos)
+        {
+            var etiquetasCmd = new SqlCommand("SELECT E.Nombre FROM ArchivoEtiquetas AE INNER JOIN Etiquetas E ON AE.EtiquetaId = E.Id WHERE AE.ArchivoId = @ArchivoId", conexion);
+            etiquetasCmd.Parameters.AddWithValue("@ArchivoId", archivo.Id);
+            var etiquetas = new List<string>();
+            using var etiquetasReader = await etiquetasCmd.ExecuteReaderAsync();
+            while (await etiquetasReader.ReadAsync())
+                etiquetas.Add(etiquetasReader.GetString(0));
+            etiquetasReader.Close();
+
+            var metadatosCmd = new SqlCommand("SELECT Clave, Valor FROM Metadatos WHERE ArchivoId = @ArchivoId", conexion);
+            metadatosCmd.Parameters.AddWithValue("@ArchivoId", archivo.Id);
+            var metadatos = new Dictionary<string, string>();
+            using var metadatosReader = await metadatosCmd.ExecuteReaderAsync();
+            while (await metadatosReader.ReadAsync())
+                metadatos[metadatosReader.GetString(0)] = metadatosReader.GetString(1);
+            metadatosReader.Close();
+
+            resultados.Add(new
+            {
+                id = archivo.Id,
+                nombre = archivo.Nombre,
+                fechaSubida = archivo.Fecha,
+                usuario = archivo.Usuario,
+                categoria = archivo.Categoria,
+                metadatos = metadatos,
+                etiquetas = etiquetas
+            });
+        }
+
+        return Ok(resultados);
     }
 
 }

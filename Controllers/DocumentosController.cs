@@ -18,11 +18,13 @@ public class DocumentosController : ControllerBase
  {
     private readonly IBlobStorageService _blobService;
     private readonly IConfiguration _config;
+    private readonly IAuditoriaService _auditoriaService;
 
-    public DocumentosController(IBlobStorageService blobService, IConfiguration config)
+    public DocumentosController(IBlobStorageService blobService, IConfiguration config, IAuditoriaService auditoriaService)
     {
         _blobService = blobService;
         _config = config;
+        _auditoriaService = auditoriaService;
 
     }
 
@@ -109,6 +111,14 @@ public class DocumentosController : ControllerBase
             }
         }
 
+        // Registrar acción en auditoría
+        await _auditoriaService.RegistrarAsync(
+            usuarioId,
+            archivoId,
+            "Subida",
+            $"El usuario subió el archivo '{dto.Nombre}' con el identificador '{archivoId}'"
+        );
+
         return Ok(new { mensaje = "Archivo subido con éxito", url = rutaAzure });
     }
 
@@ -119,6 +129,7 @@ public class DocumentosController : ControllerBase
     {
         string nombreOriginal = "";
         string rutaAzure = "";
+        var usuarioId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
 
         using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
         {
@@ -136,6 +147,14 @@ public class DocumentosController : ControllerBase
             nombreOriginal += extension;
         }
 
+        // Registrar acción en auditoría
+        await _auditoriaService.RegistrarAsync(
+            usuarioId,
+            id,
+            "Descarga",
+            $"El usuario descargó el archivo con ID '{id}'"
+        );
+
         var stream = await _blobService.DescargarArchivoAsync(Path.GetFileName(new Uri(rutaAzure).AbsolutePath));
         return File(stream, "application/octet-stream", nombreOriginal);
     }
@@ -145,6 +164,7 @@ public class DocumentosController : ControllerBase
     public async Task<IActionResult> Eliminar(Guid id)
     {
         string rutaAzure = "";
+        Guid usuarioId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
 
         using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
         {
@@ -159,20 +179,29 @@ public class DocumentosController : ControllerBase
 
             rutaAzure = (string)result;
 
+            // Registrar acción en auditoría ANTES de eliminar el archivo
+            await _auditoriaService.RegistrarAsync(
+                usuarioId,
+                id,
+                "Eliminación",
+                $"El usuario eliminó el archivo '{id}'"
+            );
+
             // Eliminar de Blob
             var nombreBlob = Path.GetFileName(new Uri(rutaAzure).AbsolutePath);
             await _blobService.EliminarArchivoAsync(nombreBlob);
 
-            // Eliminar metadatos y relaciones
+            // Eliminar metadatos
             using var delMetadatos = new SqlCommand("DELETE FROM Metadatos WHERE ArchivoId = @Id", conexion);
             delMetadatos.Parameters.AddWithValue("@Id", id);
             await delMetadatos.ExecuteNonQueryAsync();
 
+            // Eliminar relaciones Archivo-Etiqueta
             using var delAE = new SqlCommand("DELETE FROM ArchivoEtiquetas WHERE ArchivoId = @Id", conexion);
             delAE.Parameters.AddWithValue("@Id", id);
             await delAE.ExecuteNonQueryAsync();
 
-            // Eliminar archivo
+            // Finalmente, eliminar el archivo
             using var delArchivo = new SqlCommand("DELETE FROM Archivos WHERE Id = @Id", conexion);
             delArchivo.Parameters.AddWithValue("@Id", id);
             await delArchivo.ExecuteNonQueryAsync();
@@ -180,6 +209,7 @@ public class DocumentosController : ControllerBase
 
         return Ok("Archivo eliminado correctamente.");
     }
+
 
     // Listar todos los documentos disponibles
     [Authorize]
@@ -347,6 +377,8 @@ public class DocumentosController : ControllerBase
             return BadRequest("Los metadatos no pueden estar vacíos.");
         }
 
+        var usuarioId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
+
         using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
         {
             await conexion.OpenAsync();
@@ -375,10 +407,19 @@ public class DocumentosController : ControllerBase
             }
         }
 
+        // Registrar acción en auditoría
+        await _auditoriaService.RegistrarAsync(
+            usuarioId,
+            id,
+            "Edición de metadatos",
+            $"El usuario editó los metadatos del archivo con ID '{id}'"
+        );
+
         return Ok("Metadatos actualizados correctamente.");
     }
 
     // Crear Categorias
+    // Editar Etiquetas
 
     // Búsqueda Avanzada
     [Authorize]

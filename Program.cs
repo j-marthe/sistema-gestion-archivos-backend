@@ -17,6 +17,9 @@ builder.Services.AddScoped<AuthService>();
 // Inyección del BlobStorageService
 builder.Services.AddScoped<IBlobStorageService, BlobStorageService>();
 
+// Inyección del AuditoriaService
+builder.Services.AddScoped<IAuditoriaService, AuditoriaService>();
+
 // Configuración de JWT
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>

@@ -1,3 +1,4 @@
+using System.Data.SqlClient;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -120,13 +121,76 @@ public class AuthController : ControllerBase
         // Responder según el resultado de la actualización
         return actualizado ? Ok("Usuario actualizado correctamente") : NotFound("Usuario no encontrado");
     }
+
+    [Authorize(Roles = "Administrador")]
+    [HttpGet("roles")]
+    public async Task<IActionResult> ObtenerRoles()
+    {
+        List<object> roles = new List<object>();
+
+        using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
+        {
+            try
+            {
+                await conexion.OpenAsync();
+
+                using (var command = new SqlCommand("SELECT Id, Nombre FROM Roles", conexion))
+                {
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            roles.Add(new
+                            {
+                                Id = reader["Id"],
+                                Nombre = reader["Nombre"]
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Error al obtener los roles: {ex.Message}");
+            }
+        }
+        return Ok(roles);
+    }
+
+    [Authorize(Roles = "Administrador")]
+    [HttpPut("roles/modificar-rol/{usuarioId}")]
+    public async Task<IActionResult> ModificarRolUsuario(Guid usuarioId, [FromBody] ModificarRolDTO dto)
+    {
+        if (usuarioId == Guid.Empty || dto == null || dto.NuevoRolId == Guid.Empty)
+            return BadRequest("Datos inválidos");
+
+        using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
+        {
+            await conexion.OpenAsync();
+
+            // Verifica que el usuario exista
+            using (var checkCmd = new SqlCommand("SELECT COUNT(*) FROM Usuarios WHERE Id = @UsuarioId", conexion))
+            {
+                checkCmd.Parameters.AddWithValue("@UsuarioId", usuarioId);
+                var existe = (int)await checkCmd.ExecuteScalarAsync();
+                if (existe == 0)
+                    return NotFound("Usuario no encontrado");
+            }
+
+            // Actualiza el rol
+            using (var updateCmd = new SqlCommand("UPDATE Usuarios SET Rol_Id = @NuevoRolId WHERE Id = @UsuarioId", conexion))
+            {
+                updateCmd.Parameters.AddWithValue("@UsuarioId", usuarioId);
+                updateCmd.Parameters.AddWithValue("@NuevoRolId", dto.NuevoRolId);
+
+                await updateCmd.ExecuteNonQueryAsync();
+            }
+        }
+
+        return Ok("Rol del usuario actualizado correctamente.");
+    }
+
+
 }
 
-// Mejor método para proteger rutas por roles en un futuro
-/*[Authorize(Roles = "Administrador")]
-[HttpGet("admin-only")]
-public IActionResult SoloAdmin()
-{
-    return Ok("Solo los admins pueden ver esto");
-}
-*/
+

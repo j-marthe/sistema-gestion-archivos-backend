@@ -418,9 +418,6 @@ public class DocumentosController : ControllerBase
         return Ok("Metadatos actualizados correctamente.");
     }
 
-    // Crear Categorias
-    // Editar Etiquetas
-
     // Búsqueda Avanzada
     [Authorize]
     [HttpPost("buscar")]
@@ -541,6 +538,59 @@ public class DocumentosController : ControllerBase
         }
 
         return Ok(resultados);
+    }
+
+    // Listar todas las categorías
+    [Authorize]
+    [HttpGet("categorias/listar")]
+    public async Task<IActionResult> ListarCategorias()
+    {
+        var categorias = new List<object>();
+
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        using var cmd = new SqlCommand("SELECT Id, Nombre FROM Categorias ORDER BY Nombre", conexion);
+        using var reader = await cmd.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            categorias.Add(new
+            {
+                Id = reader.GetGuid(0),
+                Nombre = reader.GetString(1)
+            });
+        }
+
+        return Ok(categorias);
+    }
+
+    // Crear una nueva categoría
+    [Authorize(Roles = "Administrador,Usuario Estándar")]
+    [HttpPost("categorias/crear")]
+    public async Task<IActionResult> CrearCategorias([FromBody] string nombreCategoria)
+    {
+        if (string.IsNullOrWhiteSpace(nombreCategoria))
+            return BadRequest("El nombre de la categoría es obligatorio.");
+
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        // Verificar si ya existe
+        using var checkCmd = new SqlCommand("SELECT COUNT(*) FROM Categorias WHERE Nombre = @Nombre", conexion);
+        checkCmd.Parameters.AddWithValue("@Nombre", nombreCategoria);
+        var existe = (int)await checkCmd.ExecuteScalarAsync();
+
+        if (existe > 0)
+            return Conflict("Ya existe una categoría con ese nombre.");
+
+        // Insertar nueva categoría
+        using var insertCmd = new SqlCommand("INSERT INTO Categorias (Id, Nombre) VALUES (@Id, @Nombre)", conexion);
+        insertCmd.Parameters.AddWithValue("@Id", Guid.NewGuid());
+        insertCmd.Parameters.AddWithValue("@Nombre", nombreCategoria);
+        await insertCmd.ExecuteNonQueryAsync();
+
+        return Ok("Categoría creada exitosamente.");
     }
 
 }

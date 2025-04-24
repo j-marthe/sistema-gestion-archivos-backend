@@ -62,6 +62,18 @@ public class DocumentosController : ControllerBase
                 await cmd.ExecuteNonQueryAsync();
             }
 
+            // Registrar la primera versión en VersionesArchivos
+            using (var cmdVersion = new SqlCommand("INSERT INTO VersionesArchivos (Id, ArchivoId, NumeroVersion, RutaAlmacenamiento, FechaCreacion, UsuarioId) VALUES (@Id, @ArchivoId, @NumeroVersion, @Ruta, @Fecha, @UsuarioId)", conexion))
+            {
+                cmdVersion.Parameters.AddWithValue("@Id", Guid.NewGuid());
+                cmdVersion.Parameters.AddWithValue("@ArchivoId", archivoId);
+                cmdVersion.Parameters.AddWithValue("@NumeroVersion", 1);
+                cmdVersion.Parameters.AddWithValue("@Ruta", rutaAzure);
+                cmdVersion.Parameters.AddWithValue("@Fecha", DateTime.Now);
+                cmdVersion.Parameters.AddWithValue("@UsuarioId", usuarioId);
+                await cmdVersion.ExecuteNonQueryAsync();
+            }
+
             // Etiquetas
             if (!string.IsNullOrWhiteSpace(dto.Etiquetas))
             {
@@ -187,21 +199,43 @@ public class DocumentosController : ControllerBase
                 $"El usuario eliminó el archivo '{id}'"
             );
 
-            // Eliminar de Blob
+            // Eliminar las versiones del archivo de la tabla 'VersionesArchivos'
+            using var delVersiones = new SqlCommand("SELECT RutaAlmacenamiento FROM VersionesArchivos WHERE ArchivoId = @ArchivoId", conexion);
+            delVersiones.Parameters.AddWithValue("@ArchivoId", id);
+            using var reader = await delVersiones.ExecuteReaderAsync();  // Usamos ExecuteReaderAsync para leer las versiones
+
+            // Eliminar cada versión del blob en Azure
+            while (await reader.ReadAsync())
+            {
+                string rutaVersionBlob = reader.GetString(0);
+                var nombreVersionBlob = Path.GetFileName(new Uri(rutaVersionBlob).AbsolutePath);
+                // Eliminar cada versión del archivo en Blob Storage
+                await _blobService.EliminarArchivoAsync(nombreVersionBlob);
+            }
+
+            // Cerrar el DataReader antes de ejecutar otro comando
+            await reader.DisposeAsync();
+
+            // Eliminar las versiones del archivo de la base de datos
+            using var delVersionesCmd = new SqlCommand("DELETE FROM VersionesArchivos WHERE ArchivoId = @ArchivoId", conexion);
+            delVersionesCmd.Parameters.AddWithValue("@ArchivoId", id);
+            await delVersionesCmd.ExecuteNonQueryAsync();
+
+            // Eliminar el archivo principal de Blob
             var nombreBlob = Path.GetFileName(new Uri(rutaAzure).AbsolutePath);
             await _blobService.EliminarArchivoAsync(nombreBlob);
 
-            // Eliminar metadatos
+            // Eliminar metadatos asociados al archivo
             using var delMetadatos = new SqlCommand("DELETE FROM Metadatos WHERE ArchivoId = @Id", conexion);
             delMetadatos.Parameters.AddWithValue("@Id", id);
             await delMetadatos.ExecuteNonQueryAsync();
 
-            // Eliminar relaciones Archivo-Etiqueta
+            // Eliminar relaciones de etiquetas con el archivo
             using var delAE = new SqlCommand("DELETE FROM ArchivoEtiquetas WHERE ArchivoId = @Id", conexion);
             delAE.Parameters.AddWithValue("@Id", id);
             await delAE.ExecuteNonQueryAsync();
 
-            // Finalmente, eliminar el archivo
+            // Finalmente, eliminar el archivo de la tabla 'Archivos'
             using var delArchivo = new SqlCommand("DELETE FROM Archivos WHERE Id = @Id", conexion);
             delArchivo.Parameters.AddWithValue("@Id", id);
             await delArchivo.ExecuteNonQueryAsync();
@@ -209,6 +243,7 @@ public class DocumentosController : ControllerBase
 
         return Ok("Archivo eliminado correctamente.");
     }
+
 
 
     // Listar todos los documentos disponibles
@@ -592,6 +627,95 @@ public class DocumentosController : ControllerBase
 
         return Ok("Categoría creada exitosamente.");
     }
+
+    // Control de versiones
+
+    [Authorize(Roles = "Administrador,Usuario Estándar")]
+    [HttpPost("subir-version/{id}")]
+    public async Task<IActionResult> SubirNuevaVersion(Guid id, [FromForm] IFormFile archivo)
+    {
+        if (archivo == null || archivo.Length == 0)
+            return BadRequest("Archivo inválido.");
+
+        var extension = Path.GetExtension(archivo.FileName);
+        var nombreInterno = $"{Guid.NewGuid()}{extension}";
+
+        var rutaAzure = await _blobService.SubirArchivoAsync(archivo, nombreInterno);
+        var usuarioId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
+
+        using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
+        {
+            await conexion.OpenAsync();
+
+            // Obtener la última versión del archivo
+            int numeroVersion;
+            using (var cmdVersion = new SqlCommand("SELECT MAX(NumeroVersion) FROM VersionesArchivos WHERE ArchivoId = @ArchivoId", conexion))
+            {
+                cmdVersion.Parameters.AddWithValue("@ArchivoId", id);
+                numeroVersion = (int)(await cmdVersion.ExecuteScalarAsync() ?? 0) + 1;
+            }
+
+            // Actualizar la ruta en la tabla Archivos
+            using (var cmdUpdate = new SqlCommand("UPDATE Archivos SET RutaAlmacenamiento = @Ruta WHERE Id = @Id", conexion))
+            {
+                cmdUpdate.Parameters.AddWithValue("@Ruta", rutaAzure);
+                cmdUpdate.Parameters.AddWithValue("@Id", id);
+                await cmdUpdate.ExecuteNonQueryAsync();
+            }
+
+            // Insertar la nueva versión en la tabla VersionesArchivos
+            using (var cmdInsertVersion = new SqlCommand("INSERT INTO VersionesArchivos (Id, ArchivoId, NumeroVersion, RutaAlmacenamiento, FechaCreacion, UsuarioId) VALUES (@Id, @ArchivoId, @NumeroVersion, @Ruta, @Fecha, @UsuarioId)", conexion))
+            {
+                cmdInsertVersion.Parameters.AddWithValue("@Id", Guid.NewGuid());
+                cmdInsertVersion.Parameters.AddWithValue("@ArchivoId", id);
+                cmdInsertVersion.Parameters.AddWithValue("@NumeroVersion", numeroVersion);
+                cmdInsertVersion.Parameters.AddWithValue("@Ruta", rutaAzure);
+                cmdInsertVersion.Parameters.AddWithValue("@Fecha", DateTime.Now);
+                cmdInsertVersion.Parameters.AddWithValue("@UsuarioId", usuarioId);
+                await cmdInsertVersion.ExecuteNonQueryAsync();
+            }
+        }
+
+        // Registrar acción en auditoría
+        await _auditoriaService.RegistrarAsync(usuarioId, id, "Subida Versión", $"El usuario subió una nueva versión del archivo '{id}'");
+
+        return Ok(new { mensaje = "Nueva versión subida con éxito", url = rutaAzure });
+    }
+
+    [Authorize(Roles = "Administrador,Usuario Estándar")]
+    [HttpPost("restaurar-version/{id}/{version}")]
+    public async Task<IActionResult> RestaurarVersion(Guid id, int version)
+    {
+        string rutaAzure = "";
+        Guid usuarioId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier));
+
+        using (var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection")))
+        {
+            await conexion.OpenAsync();
+
+            // Obtener la ruta de la versión solicitada
+            using var getCmd = new SqlCommand("SELECT RutaAlmacenamiento FROM VersionesArchivos WHERE ArchivoId = @ArchivoId AND NumeroVersion = @Version", conexion);
+            getCmd.Parameters.AddWithValue("@ArchivoId", id);
+            getCmd.Parameters.AddWithValue("@Version", version);
+            var result = await getCmd.ExecuteScalarAsync();
+
+            if (result == null) return NotFound("Versión no encontrada");
+
+            rutaAzure = (string)result;
+
+            // Actualizar la ruta en la tabla Archivos
+            using var cmdUpdate = new SqlCommand("UPDATE Archivos SET RutaAlmacenamiento = @Ruta WHERE Id = @Id", conexion);
+            cmdUpdate.Parameters.AddWithValue("@Ruta", rutaAzure);
+            cmdUpdate.Parameters.AddWithValue("@Id", id);
+            await cmdUpdate.ExecuteNonQueryAsync();
+        }
+
+        // Registrar acción en auditoría
+        await _auditoriaService.RegistrarAsync(usuarioId, id, "Restaurar Versión", $"El usuario restauró la versión {version} del archivo '{id}'");
+
+        return Ok(new { mensaje = "Versión restaurada con éxito", url = rutaAzure });
+    }
+
 
 }
 

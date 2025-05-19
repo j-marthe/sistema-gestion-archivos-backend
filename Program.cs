@@ -39,6 +39,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
+// Configuración CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAngularDev", policy =>
+    {
+        policy.WithOrigins("http://localhost:4200")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -46,7 +57,30 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Manejo global de errores
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+
+        var errorFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+
+        if (errorFeature != null)
+        {
+            logger.LogError(errorFeature.Error, "Unhandled exception occurred!");
+        }
+
+        await context.Response.WriteAsync("{\"error\":\"An unexpected error occurred.\"}");
+    });
+});
+
 // app.UseHttpsRedirection(); // opcional
+
+// Habilitar CORS (debe estar antes de Auth)
+app.UseCors("AllowAngularDev");
 
 app.UseAuthentication();
 app.UseAuthorization();

@@ -109,9 +109,7 @@ public class AuthService
         using var conexion = new SqlConnection(_connectionString);
         conexion.Open();
 
-        var query = @"SELECT u.Id, u.Nombre, u.Email, u.FechaRegistro, r.Nombre AS Rol
-                  FROM Usuarios u
-                  JOIN Roles r ON u.Rol_Id = r.Id";
+        var query = @"SELECT Id, Nombre, Email, FechaRegistro, Rol_Id FROM Usuarios";
 
         using var cmd = new SqlCommand(query, conexion);
         using var reader = cmd.ExecuteReader();
@@ -119,16 +117,17 @@ public class AuthService
         {
             usuarios.Add(new UsuarioDTO
             {
-                Id = reader.GetGuid(0),
-                Nombre = reader.GetString(1),
-                Email = reader.GetString(2),
-                FechaRegistro = reader.GetDateTime(4),
-                RolId = reader.GetGuid(5)
+                Id = reader.GetGuid(0),             
+                Nombre = reader.GetString(1),       
+                Email = reader.GetString(2),        
+                FechaRegistro = reader.GetDateTime(3), 
+                RolId = reader.GetGuid(4)           
             });
         }
 
         return usuarios;
     }
+
 
     public bool EliminarUsuario(Guid id)
     {
@@ -141,22 +140,56 @@ public class AuthService
         return cmd.ExecuteNonQuery() > 0;
     }
 
-    public bool EditarUsuario(Usuario usuario) 
+    public bool EditarUsuario(Usuario usuario)
     {
         using var conexion = new SqlConnection(_connectionString);
         conexion.Open();
 
-        var query = @"UPDATE Usuarios 
-                  SET Nombre = @Nombre, Email = @Email, Rol_Id = @Rol_Id 
-                  WHERE Id = @Id";
+        // Si se incluye una contraseña nueva, también se actualiza
+        var query = usuario.ContrasenaHash != null
+            ? @"UPDATE Usuarios 
+           SET Nombre = @Nombre, Email = @Email, ContrasenaHash = @ContrasenaHash
+           WHERE Id = @Id"
+            : @"UPDATE Usuarios 
+           SET Nombre = @Nombre, Email = @Email
+           WHERE Id = @Id";
 
         using var cmd = new SqlCommand(query, conexion);
         cmd.Parameters.AddWithValue("@Id", usuario.Id);
         cmd.Parameters.AddWithValue("@Nombre", usuario.Nombre);
         cmd.Parameters.AddWithValue("@Email", usuario.Email);
-        cmd.Parameters.AddWithValue("@Rol_Id", usuario.RolId);
+
+        if (usuario.ContrasenaHash != null)
+            cmd.Parameters.AddWithValue("@ContrasenaHash", usuario.ContrasenaHash);
 
         return cmd.ExecuteNonQuery() > 0;
     }
+
+
+    public List<DocumentoUsuarioDTO> ObtenerDocumentosPorUsuario(Guid usuarioId)
+    {
+        var documentos = new List<DocumentoUsuarioDTO>();
+
+        using var conexion = new SqlConnection(_connectionString);
+        conexion.Open();
+        var query = @"SELECT Archivos.Nombre, Archivos.FechaSubida, Categorias.Nombre FROM Archivos INNER JOIN Categorias ON Archivos.CategoriaId = Categorias.Id  WHERE Archivos.UsuarioId = @usuarioId";
+
+        using var cmd = new SqlCommand(query, conexion);
+        cmd.Parameters.AddWithValue("@usuarioId", usuarioId);
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            documentos.Add(new DocumentoUsuarioDTO
+            {
+                Nombre = reader.GetString(0),
+                FechaRegistro = reader.GetDateTime(1),
+                Categoria = reader.GetString(2),
+            });
+        }
+
+        return documentos;
+    }
+
 
 }

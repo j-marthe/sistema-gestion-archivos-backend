@@ -18,10 +18,9 @@ public class AuditoriaController : ControllerBase
     }
 
     [HttpGet("listar")]
-    public async Task<IActionResult> Listar([FromQuery] DateTime? desde, [FromQuery] DateTime? hasta,
-                                            [FromQuery] int pagina = 1, [FromQuery] int tamanoPagina = 10)
+    public async Task<IActionResult> Listar([FromQuery] DateTime? desde, [FromQuery] DateTime? hasta)
     {
-        var resultados = await _auditoriaService.ListarAsync(desde, hasta, pagina, tamanoPagina);
+        var resultados = await _auditoriaService.ListarAsync(desde, hasta);
         return Ok(resultados);
     }
 }

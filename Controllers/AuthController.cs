@@ -20,13 +20,16 @@ public class AuthController : ControllerBase
         _config = config;
     }
 
+    [Authorize]
     [HttpPost("registro")]
-    public IActionResult Registrar(UsuarioDTO usuarioDto)
+    public async Task<IActionResult> Registrar(UsuarioDTO usuarioDto)
     {
         try
         {
             if (_authService.UsuarioExiste(usuarioDto.Email))
                 return BadRequest("El email ya está registrado.");
+
+            var rolPrestablecido = Guid.Parse("6B5F923B-DDA5-4096-AE0A-0E5617694F1E");
 
             var usuario = new Usuario
             {
@@ -35,39 +38,56 @@ public class AuthController : ControllerBase
                 Email = usuarioDto.Email,
                 ContrasenaHash = BCrypt.Net.BCrypt.HashPassword(usuarioDto.Contrasena),
                 FechaRegistro = DateTime.Now,
-                RolId = usuarioDto.RolId
+                RolId = rolPrestablecido
             };
 
-            _authService.RegistrarUsuario(usuario);
+            // Usamos RetryHelper para registrar el usuario
+            await RetryHelper.ExecuteAsync(async () =>
+            {
+                _authService.RegistrarUsuario(usuario);
+                return true; // Regresa un valor para que RetryHelper funcione
+            });
+
             return Ok("Usuario registrado correctamente.");
         }
         catch (Exception ex)
         {
-            // Devuelve el error real al cliente (temporalmente para debug)
             return StatusCode(500, $"Error interno: {ex.Message}");
         }
     }
 
+
     [HttpPost("login")]
-    public IActionResult Login(LoginDTO login)
+    public async Task<IActionResult> Login(LoginDTO login)
     {
-        var usuario = _authService.ObtenerUsuarioPorEmail(login.Email);
-        Guid rolId = usuario.RolId;
-
-        if (usuario == null || !BCrypt.Net.BCrypt.Verify(login.Contrasena, usuario.ContrasenaHash))
-            return Unauthorized("Credenciales inválidas.");
-
-        string rolNombre = usuario.RolId switch
+        try
         {
-            Guid id when id == Guid.Parse("C3C1D079-5736-4D73-A522-3ED165DB693B") => "Administrador",
-            Guid id when id == Guid.Parse("07A3CE69-025D-41F4-8C76-F3DB00E60BD8") => "Usuario Estándar",
-            Guid id when id == Guid.Parse("6B5F923B-DDA5-4096-AE0A-0E5617694F1E") => "Lector",
-            _ => "Desconocido" // Se añade una opción por si no coincide con ningún rol conocido
-        };
+            // Usamos RetryHelper para el acceso al usuario
+            var usuario = await RetryHelper.ExecuteAsync(async () =>
+            {
+                return _authService.ObtenerUsuarioPorEmail(login.Email);
+            });
 
-        var token = TokenUtils.GenerarTokenJWT(usuario, rolNombre, _config);
-        return Ok(new { Token = token });
+            if (usuario == null || !BCrypt.Net.BCrypt.Verify(login.Contrasena, usuario.ContrasenaHash))
+                return Unauthorized("Credenciales inválidas.");
+
+            string rolNombre = usuario.RolId switch
+            {
+                Guid id when id == Guid.Parse("C3C1D079-5736-4D73-A522-3ED165DB693B") => "Administrador",
+                Guid id when id == Guid.Parse("07A3CE69-025D-41F4-8C76-F3DB00E60BD8") => "Usuario Estándar",
+                Guid id when id == Guid.Parse("6B5F923B-DDA5-4096-AE0A-0E5617694F1E") => "Lector",
+                _ => "Desconocido"
+            };
+
+            var token = TokenUtils.GenerarTokenJWT(usuario, rolNombre, _config);
+            return Ok(new { Token = token });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, $"Error interno: {ex.Message}");
+        }
     }
+
 
     [Authorize]
     [HttpGet("perfil")]
@@ -103,24 +123,60 @@ public class AuthController : ControllerBase
         return eliminado ? Ok("Usuario eliminado") : NotFound("Usuario no encontrado");
     }
 
-    [Authorize(Roles = "Administrador")]
+    [Authorize]
     [HttpPut("usuarios/editar/{id}")]
     public IActionResult EditarUsuario(Guid id, [FromBody] EditarUsuarioDTO dto)
     {
+        
+        var userIdFromToken = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+        
+        var esAdmin = User.IsInRole("Administrador");
+
+        
+        if (!esAdmin && userIdFromToken != id.ToString())
+        {
+            return Forbid("No tienes permisos para editar este perfil.");
+        }
+
         var usuario = new Usuario
         {
             Id = id,
             Nombre = dto.Nombre,
             Email = dto.Email,
-            ContrasenaHash = BCrypt.Net.BCrypt.HashPassword(dto.Contrasena),
-            RolId = dto.RolId
+            ContrasenaHash = string.IsNullOrWhiteSpace(dto.Contrasena)
+                             ? null
+                             : BCrypt.Net.BCrypt.HashPassword(dto.Contrasena)
         };
 
         bool actualizado = _authService.EditarUsuario(usuario);
 
-        // Responder según el resultado de la actualización
-        return actualizado ? Ok("Usuario actualizado correctamente") : NotFound("Usuario no encontrado");
+        return actualizado
+            ? Ok("Usuario actualizado correctamente")
+            : NotFound("Usuario no encontrado");
     }
+
+
+    [Authorize]
+    [HttpGet("usuarios/{id}/documentos")]
+    public IActionResult ObtenerDocumentosPorUsuario(Guid id)
+    {
+        var userIdFromToken = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var esAdmin = User.IsInRole("Administrador");
+
+        if (!esAdmin && userIdFromToken != id.ToString())
+        {
+            return Forbid("No puedes ver documentos de otros usuarios.");
+        }
+
+        var documentos = _authService.ObtenerDocumentosPorUsuario(id);
+
+        return documentos == null || !documentos.Any()
+            ? NotFound("El usuario no ha subido documentos.")
+            : Ok(documentos);
+    }
+
+
 
     [Authorize(Roles = "Administrador")]
     [HttpGet("roles")]

@@ -168,6 +168,10 @@ public class DocumentosController : ControllerBase
         );
 
         var stream = await _blobService.DescargarArchivoAsync(Path.GetFileName(new Uri(rutaAzure).AbsolutePath));
+
+        // Establecer el encabezado del nombre de archivo
+        Response.Headers.Add("X-Filename", nombreOriginal);
+
         return File(stream, "application/octet-stream", nombreOriginal);
     }
 
@@ -628,6 +632,31 @@ public class DocumentosController : ControllerBase
         return Ok("Categoría creada exitosamente.");
     }
 
+    // Eliminar una categoría
+    [Authorize(Roles = "Administrador")]
+    [HttpDelete("categorias/eliminar/{id}")]
+    public async Task<IActionResult> EliminarCategoria(Guid id)
+    {
+
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        // Verificar si existe
+        using var checkCmd = new SqlCommand("SELECT COUNT(*) FROM Categorias WHERE Id = @Id", conexion);
+        checkCmd.Parameters.AddWithValue("@Id", id);
+        var existe = (int)await checkCmd.ExecuteScalarAsync();
+
+        if (existe == 0)
+            return NotFound("No existe una categoría con ese id.");
+
+        // Borrar una categoría
+        using var deleteCmd = new SqlCommand("DELETE FROM Categorias WHERE Id = @Id", conexion);
+        deleteCmd.Parameters.AddWithValue("@Id", id);
+        await deleteCmd.ExecuteNonQueryAsync();
+
+        return Ok("Categoría eliminada exitosamente.");
+    }
+
     // Control de versiones
 
     [Authorize(Roles = "Administrador,Usuario Estándar")]
@@ -715,6 +744,75 @@ public class DocumentosController : ControllerBase
 
         return Ok(new { mensaje = "Versión restaurada con éxito", url = rutaAzure });
     }
+
+    // Endpoint para listar versiones de un archivo
+
+    [Authorize(Roles = "Administrador,Usuario Estándar,Lector")]
+    [HttpGet("listar-versiones/{archivoId}")]
+    public async Task<IActionResult> ListarVersiones(Guid archivoId)
+    {
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        var versiones = new List<object>();
+
+        var cmd = new SqlCommand(@"
+        SELECT 
+            NumeroVersion, 
+            RutaAlmacenamiento, 
+            FechaCreacion,
+            UsuarioId 
+        FROM VersionesArchivos 
+        WHERE ArchivoId = @ArchivoId 
+        ORDER BY NumeroVersion DESC", conexion);
+
+        cmd.Parameters.AddWithValue("@ArchivoId", archivoId);
+
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            versiones.Add(new
+            {
+                numeroVersion = reader.GetInt32(0),
+                ruta = reader.GetString(1),
+                fecha = reader.GetDateTime(2),
+                usuarioId = reader.GetGuid(3)
+            });
+        }
+
+        return Ok(versiones);
+    }
+
+    // Obtener archivo y extensión
+
+    [Authorize(Roles = "Administrador,Usuario Estándar")]
+    [HttpGet("archivos-basicos")]
+    public async Task<IActionResult> ObtenerArchivosBasicos()
+    {
+        var archivos = new List<object>();
+
+        using var conexion = new SqlConnection(_config.GetConnectionString("DefaultConnection"));
+        await conexion.OpenAsync();
+
+        var cmd = new SqlCommand(@"
+        SELECT Id, Nombre, Extension 
+        FROM Archivos
+        ORDER BY FechaSubida DESC", conexion);
+
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            archivos.Add(new
+            {
+                id = reader.GetGuid(0),
+                nombre = reader.GetString(1),
+                extension = reader.GetString(2)
+            });
+        }
+
+        return Ok(archivos);
+    }
+
 
 
 }
